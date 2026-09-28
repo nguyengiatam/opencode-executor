@@ -1,46 +1,41 @@
-# agy-executor
+# opencode-executor
 
-A Claude Code plugin that dispatches the **Antigravity CLI (`agy`)** as a
-background coding executor — with the correct flags baked in, per-repo job
-tracking, quota checks, and resume. Modeled on the `codex` plugin's shape
-(runtime + slash commands + forwarder subagent), minus the app-server machinery
-agy doesn't need.
+A Claude Code plugin that dispatches the **opencode CLI** as a background coding executor — with the correct flags baked in, per-repo job tracking, timeout handling, and session resume.
 
 ## Install
 
 ```
-/plugin marketplace add https://github.com/nguyengiatam/agy-executor.git
-/plugin install agy-executor@agy-executor-marketplace
+/plugin marketplace add https://github.com/nguyengiatam/opencode-executor.git
+/plugin install opencode-executor@opencode-executor-marketplace
 ```
 
 ## Requirements
 
-The `agy` (Antigravity) CLI must be installed and on your PATH. Run
-`/agy-executor:setup` to verify install and remaining quota.
+The `opencode` CLI must be installed and on your PATH. Run `/opencode-executor:setup` to verify the installation and list available models.
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `/agy-executor:exec <task>` | Dispatch a task to agy (background by default; `--wait` for inline). |
-| `/agy-executor:status [id]` | List recent jobs, or show one job's detail + output tail. |
-| `/agy-executor:result [id]` | Print a job's stored output (defaults to the latest). |
-| `/agy-executor:cancel [id]` | Cancel a running background job. |
-| `/agy-executor:quota` | Show remaining quota per model group, with reset times. |
-| `/agy-executor:setup` | Check agy install + quota. |
+| `/opencode-executor:exec <task>` | Dispatch a task to opencode (background by default; `--wait` for inline). |
+| `/opencode-executor:status [id]` | List recent jobs, or show one job's detail, sessionID, and output-event summary. |
+| `/opencode-executor:result [id]` | Print a job's human-readable result (`--raw` for stored JSONL). |
+| `/opencode-executor:cancel [id]` | Cancel a running background job. |
+| `/opencode-executor:setup` | Check opencode installation, version, and available models. |
 
-Claude can also delegate to the `agy-executor:agy-runner` subagent, which
-forwards a task to the runtime.
+## Runtime
 
-## Why a runtime wrapper
+The runtime invokes opencode as:
 
-`agy` is easy to call wrong: passing the prompt positionally makes it research
-the flag instead of doing the task, and an exhausted quota fails silently. The
-runtime builds the command correctly every time and tracks jobs so you can poll
-and resume. It also reads real quota from agy's own `/quota` command, so
-`exec` refuses to dispatch into an exhausted account instead of producing a job
-that exits 0 having done nothing. See the `agy-cli-runtime` skill for the full
-contract.
+```
+opencode run --format json --auto --dir <repo> [-m provider/model] [-s <sessionID>] -- "<full task text>"
+```
+
+`--background` is the default; `--wait` runs synchronously. Runtime timeout defaults to `85m` and accepts durations such as `90s`, `30m`, and `2h`. Resume continues an existing opencode session with `-s <sessionID>`; `--fresh` starts without resuming.
+
+Job stdout is stored as JSONL and stderr separately. Completion is derived from the JSONL events: `finished`, `failed`, `empty`, `incomplete`, or `timeout`.
+
+See the `opencode-cli-runtime` skill for the full contract.
 
 ## License
 

@@ -1,16 +1,15 @@
 {
-  "name": "agy-executor",
-  "description": "Dispatch the Antigravity CLI (agy) from Claude Code as a background coding executor — correct flags, job tracking, quota checks, and resume.",
-  "version": "0.2.0",
+  "name": "opencode-executor",
+  "description": "Dispatch the opencode CLI from Claude Code as a background coding executor — correct flags, job tracking, timeout handling, and resume.",
+  "version": "0.1.0",
   "author": {
     "name": "Nguyễn Gia Tâm"
   },
-  "homepage": "https://github.com/nguyengiatam/agy-executor",
-  "repository": "https://github.com/nguyengiatam/agy-executor",
+  "homepage": "https://github.com/nguyengiatam/opencode-executor",
+  "repository": "https://github.com/nguyengiatam/opencode-executor",
   "license": "MIT",
   "keywords": [
-    "agy",
-    "antigravity",
+    "opencode",
     "executor",
     "delegation",
     "orchestration"

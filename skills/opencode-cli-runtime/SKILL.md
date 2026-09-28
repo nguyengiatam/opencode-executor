@@ -1,97 +1,77 @@
 ---
-name: agy-cli-runtime
-description: Use when invoking or debugging the agy (Antigravity) CLI as a coding executor — documents the correct flags, prompt-handoff rule, quota check, and the failure modes that make agy silently do nothing.
+name: opencode-cli-runtime
+description: Use when invoking or debugging the opencode CLI as a headless coding executor — documents the verified invocation, JSONL events, job statuses, timeout, and resume contract.
 ---
 
-# agy CLI Runtime Contract
+# opencode CLI Runtime Contract
 
-`agy` is the Antigravity CLI, used here as a headless coding executor. It is easy
-to invoke WRONG in a way that looks like success but does nothing. The
-`agy-runtime.mjs` companion builds the command correctly; this skill is the
-source of truth for why.
+`opencode` is used here as a headless coding executor. The runtime invokes it with JSONL output and explicit repository scope.
 
-## The one rule that matters most
+## Correct invocation
 
-**Bind the prompt to `--print=` (or `--prompt=`). Never pass it positionally.**
-`agy` has no positional prompt argument. A positional string gets swallowed and
-agy goes off "researching" it instead of doing the task — the classic silent
-failure. Correct:
-
-```
-agy --print="<instruction>" --dangerously-skip-permissions ...
+```text
+opencode run --format json --auto --dir <repo> [-m provider/model] [-s <sessionID>] -- "<full task text>"
 ```
 
-`--print`, `-p`, and `--prompt` are the same flag (single-shot, non-interactive).
+- `--auto` is required for headless execution so tool permissions are auto-approved.
+- `--dir <repo>` is the repository root.
+- The task is one positional argument after `--`; this also safely handles tasks beginning with `-`.
+- stdin is ignored/closed.
+- Without `-m`, opencode uses its configured default model. Never hardcode a model.
+- opencode has no built-in timeout or capacity-check command.
 
-## Prompt handoff
-
-Inline long prompts make agy return empty. Write the task to a file and make the
-`--print=` value a short instruction that points at it:
-
-```
-agy --print="Read the task in /path/prompt.md and complete it." --add-dir /path ...
-```
-
-Always `--add-dir` the directory holding the prompt file so agy can read it.
-
-## Correct flags (verified via `agy --help`)
+## Runtime controls
 
 | Flag | Meaning |
 |------|---------|
-| `--print=<text>` / `-p` / `--prompt=<text>` | Single-shot non-interactive prompt (value-taking). |
-| `-c` / `--continue` | Continue the most recent conversation. |
-| `--conversation <id>` | Resume a specific conversation by id. |
-| `--dangerously-skip-permissions` | Auto-approve tool permissions (required headless). |
-| `--mode accept-edits` | Let agy apply edits (use for an executor; `plan` is read-only planning). |
-| `--add-dir <dir>` | Add a directory to the workspace (repeatable). |
-| `--model "<name>"` | Pick the model, e.g. `"Claude Sonnet 4.6 (Thinking)"`. |
-| `--print-timeout <dur>` | Wait timeout for print mode (default `5m`; use e.g. `85m` for multi-step work). |
-| `--sandbox` | Opt-in terminal restrictions. Leave OFF for an executor. |
+| `--background` | Dispatch in the background; default. |
+| `--wait` | Run synchronously and wait for completion. |
+| `--resume` | Resume the latest repository job with a stored sessionID. |
+| `--fresh` | Do not resume an existing session. |
+| `--model <provider/model>` | Select the opencode model. |
+| `--timeout <dur>` | Runtime timeout; default `85m`. Accepts `90s`, `30m`, `2h`, etc. |
 
-Run agy from the repo working directory. On WSL, run it with the Bash sandbox
-disabled (`dangerouslyDisableSandbox: true`) so it can reach the filesystem and
-network.
+`--resume` without `--fresh` passes `-s <sessionID>`. If no job in this repository has a sessionID, nothing is dispatched.
 
-## Quota
+## Task recording and output
 
-agy can exhaust its quota and then **fail silently**: it prints a line or two of
-preamble, exits 0, and produces near-empty output — looking like "ran but did
-nothing."
+The full task is recorded in `jobDir/prompt.md` and also passed directly to opencode as the positional task argument.
 
-Do NOT probe this by sending a throwaway prompt: that spends the very quota you
-are measuring. agy has a `/quota` slash command (alias `/usage`), slash commands
-are expanded in print mode, and it costs **zero model tokens**
-(`usage.total_tokens == 0`). It also needs no `--dangerously-skip-permissions`:
+- stdout → `jobDir/output.jsonl`
+- stderr → `jobDir/stderr.log`
 
-```
-agy --print="/quota" --output-format json --print-timeout 1m
-```
+The first JSON event containing `sessionID` supplies the job sessionID. Background jobs resolve it lazily during status/result/refresh.
 
-The payload lands under `command.data.groups[]`, each with `buckets[]` carrying
-`window` (`weekly` / `5h`), `remaining_fraction` (0..1) and `reset_time` (ISO
-8601). Without `--output-format json` the same data prints as 4-column TSV
-(group, metric, remaining %, reset).
+## JSONL events
 
-Quota is per model *group*, not global — `Gemini Models` and
-`Claude and GPT models` are spent independently, so one group hitting 0 still
-leaves the other usable via `--model`. Each group has both a weekly limit tied
-to your tier and a rolling 5-hour limit.
+Every event contains `type`, `timestamp`, and `sessionID`. Relevant event types include:
 
-`/agy-executor:quota` renders this, `/agy-executor:setup` includes it, and
-`/agy-executor:exec` runs it as a pre-flight and refuses to dispatch when every
-group is spent (bypass with `--no-quota-check`).
+- `step_start`
+- `tool_use` — tool name is in `part.tool`; completed calls include input such as `filePath` or `command`.
+- `step_finish` — successful final completion has `part.reason: "stop"`.
+- `text` — model reply is in `part.text`.
+- `error` — failure details are under `error`, commonly `error.data.message`.
 
-## Failure modes checklist
+## Job statuses
 
-- Empty/near-empty output on exit 0 → suspect quota exhaustion, not success. Confirm with `/quota`, never with a throwaway prompt.
-- agy explaining a flag instead of doing the task → the prompt was positional.
-- Empty output with a long inline prompt → hand the prompt off via a file.
-- Cannot read the prompt file → its directory was not passed with `--add-dir`.
+Finished-job status is derived from the JSONL output rather than merely from process exit:
 
-## How this plugin uses it
+- `failed` — an `error` event exists; wait mode also treats a non-zero exit code as failed.
+- `empty` — no JSONL events were produced.
+- `finished` — the last `step_finish` has reason `stop`.
+- `incomplete` — the process died without an error event or final `step_finish`.
+- `timeout` — runtime timeout terminated the process.
 
-`/agy-executor:exec` (or the `agy-runner` subagent) builds all of the above
-automatically. Prefer them over hand-typing agy. Use `/agy-executor:status`,
-`:result`, and `:cancel` to manage background jobs, `/agy-executor:quota` to read
-remaining quota and reset times, and `/agy-executor:setup` to verify install +
-quota first.
+Wait mode exits with code 1 for every status other than `finished`.
+
+## Timeout
+
+Wait mode uses the process spawn timeout. Background jobs are checked during status/result refresh; when `now > timeoutAt`, the runtime sends `SIGTERM` to the process group, falling back to the process PID.
+
+## Resume
+
+`-s <sessionID>` continues the same opencode session with its existing memory. `node scripts/opencode-runtime.mjs resume-candidate` reports the latest job that has a sessionID.
+
+## Plugin commands
+
+Use `/opencode-executor:exec`, `/opencode-executor:status`, `/opencode-executor:result`, `/opencode-executor:cancel`, and `/opencode-executor:setup`. There is no built-in capacity check.

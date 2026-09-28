@@ -1,14 +1,14 @@
 {
-  "name": "agy-executor-marketplace",
-  "description": "Marketplace for the agy-executor plugin",
+  "name": "opencode-executor-marketplace",
+  "description": "Marketplace for the opencode-executor plugin",
   "owner": {
     "name": "Nguyễn Gia Tâm"
   },
   "plugins": [
     {
-      "name": "agy-executor",
-      "description": "Dispatch the Antigravity CLI (agy) from Claude Code as a background coding executor — correct flags, job tracking, quota checks, and resume.",
-      "version": "0.2.0",
+      "name": "opencode-executor",
+      "description": "Dispatch the opencode CLI from Claude Code as a background coding executor — correct flags, job tracking, timeout handling, and resume.",
+      "version": "0.1.0",
       "source": "./",
       "author": {
         "name": "Nguyễn Gia Tâm"
