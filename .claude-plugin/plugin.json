@@ -1,7 +1,7 @@
 {
   "name": "opencode-executor",
   "description": "Dispatch the opencode CLI from Claude Code as a background coding executor — correct flags, job tracking, timeout handling, and resume.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Nguyễn Gia Tâm"
   },

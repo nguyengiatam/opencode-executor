@@ -28,7 +28,7 @@ The `opencode` CLI must be installed and on your PATH. Run `/opencode-executor:s
 The runtime invokes opencode as:
 
 ```
-opencode run --format json --auto --dir <repo> [-m provider/model] [-s <sessionID>] -- "<full task text>"
+opencode run --format json --auto --standalone [-m provider/model] [-s <sessionID>] -- "<full task text>"
 ```
 
 `--background` is the default; `--wait` runs synchronously. Runtime timeout defaults to `85m` and accepts durations such as `90s`, `30m`, and `2h`. Resume continues an existing opencode session with `-s <sessionID>`; `--fresh` starts without resuming.

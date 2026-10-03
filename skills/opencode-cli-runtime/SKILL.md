@@ -10,11 +10,11 @@ description: Use when invoking or debugging the opencode CLI as a headless codin
 ## Correct invocation
 
 ```text
-opencode run --format json --auto --dir <repo> [-m provider/model] [-s <sessionID>] -- "<full task text>"
+opencode run --format json --auto --standalone [-m provider/model] [-s <sessionID>] -- "<full task text>"
 ```
 
 - `--auto` is required for headless execution so tool permissions are auto-approved.
-- `--dir <repo>` is the repository root.
+- Run from the repository root (the runtime spawns opencode with `cwd` = repo). opencode 2.x removed `--dir` (`Unrecognized flag: --dir`); `--standalone` runs a private server in that directory instead of the shared background service.
 - The task is one positional argument after `--`; this also safely handles tasks beginning with `-`.
 - stdin is ignored/closed.
 - Without `-m`, opencode uses its configured default model. Never hardcode a model.
@@ -58,7 +58,7 @@ Finished-job status is derived from the JSONL output rather than merely from pro
 
 - `failed` — an `error` event exists; wait mode also treats a non-zero exit code as failed.
 - `empty` — no JSONL events were produced.
-- `finished` — the last `step_finish` has reason `stop`.
+- `finished` — the last `step_finish` has reason `stop`, or (opencode 2.x, which emits no final `step_finish`) the process ended without error and the last event is `text`.
 - `incomplete` — the process died without an error event or final `step_finish`.
 - `timeout` — runtime timeout terminated the process.
 

@@ -64,6 +64,8 @@ function deriveStatus(job, events, exitCode = null) {
   const finishes = events.filter((e) => e?.type === 'step_finish');
   if (finishes.at(-1)?.part?.reason === 'stop') return { status: 'finished', error: null };
   if (exitCode !== null && exitCode !== 0) return { status: 'failed', error: `opencode exited with code ${exitCode}` };
+  // opencode 2.x: bước cuối không phát step_finish 'stop' — tiến trình thoát 0 sau một khối text là xong.
+  if ((exitCode === null || exitCode === 0) && events.at(-1)?.type === 'text') return { status: 'finished', error: null };
   return { status: 'incomplete', error: null };
 }
 
@@ -121,7 +123,7 @@ function parseTimeout(value) {
 }
 
 function buildOpencodeArgs(o, root, sessionId) {
-  const a = ['run', '--format', 'json', '--auto', '--dir', root];
+  const a = ['run', '--format', 'json', '--auto', '--standalone']; // opencode 2.x bỏ --dir: cwd của spawn là thư mục làm việc
   if (o.model) a.push('-m', o.model);
   if (sessionId) a.push('-s', sessionId);
   a.push('--', o.task);
