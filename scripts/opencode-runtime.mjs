@@ -311,7 +311,7 @@ function cmdSetup(args) {
     const v = spawnSync(OPENCODE_BIN, ['--version'], { encoding: 'utf8' });
     version = (v.stdout || v.stderr || '').trim();
     const m = spawnSync(OPENCODE_BIN, ['models'], { encoding: 'utf8', maxBuffer: 1e7 });
-    models = (m.stdout || '').split('\n').map((x) => x.trim()).filter(Boolean);
+    models = ((m.stdout || '') + '\n' + (m.stderr || '')).split('\n').map((x) => x.trim()).filter(Boolean);
   }
   if (json) {
     console.log(JSON.stringify({ opencodePath: installed ? which.stdout.trim() : null, installed, version, models }, null, 2));
