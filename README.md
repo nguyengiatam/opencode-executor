@@ -33,7 +33,7 @@ opencode run --format json --auto --standalone [-m provider/model] [-s <sessionI
 
 `--background` is the default; `--wait` runs synchronously. Runtime timeout defaults to `85m` and accepts durations such as `90s`, `30m`, and `2h`. Resume continues an existing opencode session with `-s <sessionID>`; `--fresh` starts without resuming.
 
-Job stdout is stored as JSONL and stderr separately. Completion is derived from the JSONL events: `finished`, `failed`, `empty`, `incomplete`, or `timeout`.
+Job stdout is stored as JSONL and stderr separately. Completion is derived from the JSONL events and opencode's exit code: `finished`, `failed`, `needs_input`, `empty`, `incomplete`, `timeout`, or `cancelled`. Transient provider errors that opencode retries on its own do not fail a job.
 
 See the `opencode-cli-runtime` skill for the full contract.
 

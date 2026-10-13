@@ -56,17 +56,51 @@ function eventSessionId(events) {
   return events.find((e) => e?.sessionID)?.sessionID || null;
 }
 
+function errorMessage(e) {
+  return e?.error?.data?.message || e?.error?.message || 'opencode reported an error';
+}
+
+// opencode 2.x phát `error` cho cả lỗi provider tạm thời (504, stream đứt) rồi tự thử lại và chạy tiếp.
+// Lỗi chỉ là chí mạng khi sau nó không còn tiến triển (text/tool_use/step_finish); step_start trơ trọi không tính.
+const PROGRESS_TYPES = new Set(['text', 'tool_use', 'step_finish']);
+
+function fatalError(events) {
+  let idx = -1;
+  for (let i = events.length - 1; i >= 0; i--) if (events[i]?.type === 'error') { idx = i; break; }
+  if (idx === -1) return null;
+  return events.slice(idx + 1).some((e) => PROGRESS_TYPES.has(e?.type)) ? null : events[idx];
+}
+
+// opencode 2.x có công cụ `question`; chạy không người trực thì câu hỏi không ai trả lời và run dừng ở đó.
+function pendingQuestion(events) {
+  const last = events.at(-1);
+  return last?.type === 'tool_use' && last.part?.tool === 'question' ? last : null;
+}
+
 function deriveStatus(job, events, exitCode = null) {
-  const error = events.find((e) => e?.type === 'error');
-  if (error) return { status: 'failed', error: error.error?.data?.message || error.error?.message || 'opencode reported an error' };
+  const fatal = fatalError(events);
+  if (fatal) return { status: 'failed', error: errorMessage(fatal), errorType: fatal.error?.type || null };
   if (job.status === 'timeout') return { status: 'timeout', error: null };
-  if (events.length === 0) return { status: 'empty', error: null };
+  if (events.length === 0) return { status: 'empty', error: exitCode ? `opencode exited with code ${exitCode}` : null };
+  if (pendingQuestion(events)) return { status: 'needs_input', error: null };
   const finishes = events.filter((e) => e?.type === 'step_finish');
   if (finishes.at(-1)?.part?.reason === 'stop') return { status: 'finished', error: null };
   if (exitCode !== null && exitCode !== 0) return { status: 'failed', error: `opencode exited with code ${exitCode}` };
   // opencode 2.x: bước cuối không phát step_finish 'stop' — tiến trình thoát 0 sau một khối text là xong.
   if ((exitCode === null || exitCode === 0) && events.at(-1)?.type === 'text') return { status: 'finished', error: null };
   return { status: 'incomplete', error: null };
+}
+
+function applyStatus(job, result) {
+  job.status = result.status;
+  job.error = result.error || undefined;
+  job.errorType = result.errorType || undefined;
+}
+
+function readExitCode(job) {
+  if (!job.exitCodePath || !existsSync(job.exitCodePath)) return null;
+  const n = Number.parseInt(readFileSync(job.exitCodePath, 'utf8').trim(), 10);
+  return Number.isNaN(n) ? null : n;
 }
 
 function refreshStatuses(state) {
@@ -80,9 +114,8 @@ function refreshStatuses(state) {
       continue;
     }
     if (!pidAlive(j.pid)) {
-      const result = deriveStatus(j, events);
-      j.status = result.status;
-      if (result.error) j.error = result.error;
+      j.exitCode = readExitCode(j);
+      applyStatus(j, deriveStatus(j, events, j.exitCode));
     }
   }
   return state;
@@ -152,6 +185,7 @@ function cmdExec(args) {
   const promptPath = join(jobDir, 'prompt.md');
   const outputPath = join(jobDir, 'output.jsonl');
   const stderrPath = join(jobDir, 'stderr.log');
+  const exitCodePath = join(jobDir, 'exit_code');
   writeFileSync(promptPath, `${o.task}\n`);
   writeFileSync(outputPath, '');
   writeFileSync(stderrPath, '');
@@ -159,7 +193,7 @@ function cmdExec(args) {
   const timeoutAt = new Date(Date.now() + timeoutMs).toISOString();
   const taskLine = o.task.split('\n')[0].slice(0, 100);
   const opencodeArgs = buildOpencodeArgs(o, root, sessionId);
-  const job = { jobId, pid: null, status: 'running', startedAt, timeoutAt, mode: o.background ? 'background' : 'wait', task: taskLine, model: o.model, sessionID: sessionId, outputPath, stderrPath, promptPath };
+  const job = { jobId, pid: null, status: 'running', startedAt, timeoutAt, mode: o.background ? 'background' : 'wait', task: taskLine, model: o.model, sessionID: sessionId, outputPath, stderrPath, promptPath, exitCodePath };
 
   if (!o.background) {
     const res = spawnSync(OPENCODE_BIN, opencodeArgs, {
@@ -170,10 +204,10 @@ function cmdExec(args) {
     writeFileSync(stderrPath, res.stderr || '');
     const events = readEvents(outputPath);
     job.sessionID = eventSessionId(events) || sessionId;
+    job.exitCode = res.status;
     if (res.error?.code === 'ETIMEDOUT') job.status = 'timeout';
-    else job.status = deriveStatus(job, events, res.status).status;
+    else applyStatus(job, deriveStatus(job, events, res.status));
     if (res.error && res.error.code !== 'ETIMEDOUT') job.error = res.error.message;
-    else job.error = deriveStatus(job, events, res.status).error;
     state.jobs.unshift(job);
     saveState(dir, state);
     printResult(job);
@@ -184,7 +218,13 @@ function cmdExec(args) {
 
   const outFd = openSync(outputPath, 'a');
   const errFd = openSync(stderrPath, 'a');
-  const child = spawn(OPENCODE_BIN, opencodeArgs, { cwd: root, detached: true, stdio: ['ignore', outFd, errFd] });
+  // Bọc bằng sh để ghi mã thoát của opencode ra file — tiến trình nền đã tách nên không lấy được qua spawn.
+  // sh là trưởng nhóm tiến trình, nên kill(-pid) khi timeout/cancel vẫn dừng cả opencode.
+  const wrapper = '"$0" "$@"; echo $? > "$OPENCODE_EXECUTOR_EXIT_FILE"';
+  const child = spawn('/bin/sh', ['-c', wrapper, OPENCODE_BIN, ...opencodeArgs], {
+    cwd: root, detached: true, stdio: ['ignore', outFd, errFd],
+    env: { ...process.env, OPENCODE_EXECUTOR_EXIT_FILE: exitCodePath },
+  });
   child.unref();
   job.pid = child.pid;
   state.jobs.unshift(job);
@@ -201,7 +241,7 @@ function eventSummary(e) {
   if (e?.type === 'text') return `text: ${e.part?.text || ''}`;
   if (e?.type === 'tool_use') return `tool_use: ${e.part?.tool || 'unknown'}`;
   if (e?.type === 'step_finish') return `step_finish: ${e.part?.reason || 'unknown'}`;
-  if (e?.type === 'error') return `error: ${e.error?.data?.message || e.error?.message || 'unknown error'}`;
+  if (e?.type === 'error') return `error${e.error?.type ? ` (${e.error.type})` : ''}: ${errorMessage(e)}`;
   return e?.type || 'unknown';
 }
 
@@ -266,13 +306,26 @@ function printResult(j) {
   console.log('Tools used:');
   for (const e of events.filter((x) => x?.type === 'tool_use')) {
     const input = e.part?.state?.input || {};
-    const target = input.filePath || input.command;
+    // opencode 2.x ghi đường dẫn ở `path`; 1.x dùng `filePath`.
+    const target = input.filePath || input.path || input.command || input.pattern;
     console.log(`- ${e.part?.tool || 'unknown'} — ${e.part?.state?.status || 'unknown'}${target ? ` — ${target}` : ''}`);
   }
   console.log('Final answer:');
   console.log(events.filter((x) => x?.type === 'text').map((x) => x.part?.text || '').join(''));
-  const error = events.find((x) => x?.type === 'error');
-  if (j.error || error) console.log(`Error: ${j.error || error.error?.data?.message || error.error?.message || 'opencode reported an error'}`);
+  const question = pendingQuestion(events);
+  if (question) {
+    console.log('Pending question (opencode stopped to ask; answer by resuming the session with --resume):');
+    for (const q of question.part?.state?.input?.questions || []) {
+      console.log(`- ${q.header || ''}${q.question ? `: ${q.question}` : ''}`);
+      for (const opt of q.options || []) console.log(`  * ${opt.label}${opt.description ? ` — ${opt.description}` : ''}`);
+    }
+  }
+  const errors = events.filter((x) => x?.type === 'error');
+  if (j.error) console.log(`Error: ${j.error}${j.errorType ? ` (${j.errorType})` : ''}`);
+  if (j.errorType === 'provider.quota') console.log('The provider is rate-limiting or out of quota — wait, then continue with --resume.');
+  const recovered = errors.length - (fatalError(events) ? 1 : 0);
+  if (recovered > 0) console.log(`Recovered from ${recovered} transient provider error(s) during the run.`);
+  if (j.exitCode !== undefined && j.exitCode !== null) console.log(`Exit code: ${j.exitCode}`);
   const stderr = tail(j.stderrPath, 20).trim();
   if (stderr) { console.log('Stderr (last 20 lines):'); console.log(stderr); }
 }
@@ -286,9 +339,8 @@ function cmdCancel(args) {
   if (!j) { console.log('No matching job to cancel.'); return; }
   if (!pidAlive(j.pid)) {
     if (j.status === 'running') {
-      const result = deriveStatus(j, readEvents(j.outputPath));
-      j.status = result.status;
-      if (result.error) j.error = result.error;
+      j.exitCode = readExitCode(j);
+      applyStatus(j, deriveStatus(j, readEvents(j.outputPath), j.exitCode));
     }
     saveState(dir, state);
     console.log(`Job ${j.jobId} is not running.`);
@@ -301,6 +353,23 @@ function cmdCancel(args) {
 }
 
 // ---- setup ---------------------------------------------------------------
+// opencode 2.x: `models` hỏi server nền; server vừa khởi động chưa nạp xong danh mục provider
+// nên trả rỗng (exit 0, không báo lỗi) trong ~1s đầu. Thử lại đến khi có model.
+// Không dùng --standalone: server riêng mỗi lần gọi luôn lạnh nên luôn rỗng.
+function listModels() {
+  const attempts = 12;
+  for (let i = 0; i < attempts; i++) {
+    const m = spawnSync(OPENCODE_BIN, ['models'], {
+      encoding: 'utf8', maxBuffer: 1e7, timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const models = ((m.stdout || '') + '\n' + (m.stderr || '')).split('\n')
+      .map((x) => x.trim()).filter((x) => /^[\w.-]+\/\S+$/.test(x));
+    if (models.length > 0) return models;
+    if (i < attempts - 1) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  }
+  return [];
+}
+
 function cmdSetup(args) {
   const json = args.includes('--json');
   const which = spawnSync('sh', ['-c', `command -v ${OPENCODE_BIN}`], { encoding: 'utf8' });
@@ -310,8 +379,7 @@ function cmdSetup(args) {
   if (installed) {
     const v = spawnSync(OPENCODE_BIN, ['--version'], { encoding: 'utf8' });
     version = (v.stdout || v.stderr || '').trim();
-    const m = spawnSync(OPENCODE_BIN, ['models'], { encoding: 'utf8', maxBuffer: 1e7 });
-    models = ((m.stdout || '') + '\n' + (m.stderr || '')).split('\n').map((x) => x.trim()).filter(Boolean);
+    models = listModels();
   }
   if (json) {
     console.log(JSON.stringify({ opencodePath: installed ? which.stdout.trim() : null, installed, version, models }, null, 2));
@@ -322,6 +390,7 @@ function cmdSetup(args) {
     console.log(`version: ${version || '-'}`);
     console.log(`models (${models.length}):`);
     for (const model of models) console.log(`- ${model}`);
+    if (models.length === 0) console.log('No models listed — check `opencode auth list` and `opencode service status`.');
   }
 }
 
